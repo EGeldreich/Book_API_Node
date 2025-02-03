@@ -1,47 +1,43 @@
 import { time } from "console";
 import http from "http";
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
 
-let books = [
-    {
-        id: 1,
-        title: "The Hobbit",
-        author: "J.R.R. Tolkien",
-        year: "1937",
-    },
-    {
-        id: 2,
-        title: "1984",
-        author: "George Orwell",
-        year: "1949",
-    },
-    {
-        id: 3,
-        title: "To Kill a Mockingbird",
-        author: "Harper Lee",
-        year: "1960",
-    },
-];
-let availableIds = [];
+// Database initialization function
+async function initializeDatabase() {
+    // Open (or create) the database file
+    const db = await open({
+        filename: "./library.db",
+        driver: sqlite3.Database,
+    });
 
-// ID Handler
-const generateId = () => {
-    if (availableIds.length > 0) {
-        return availableIds.shift();
-    } else {
-        return books.length > 0
-            ? Math.max(...books.map((book) => book.id)) + 1
-            : 1;
+    // Create books table if it doesn't exist
+    await db.exec(`
+        CREATE TABLE IF NOT EXISTS books (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            author TEXT NOT NULL,
+            year TEXT NOT NULL
+        )
+    `);
+
+    // Only insert initial books if the table is empty
+    const bookCount = await db.get("SELECT COUNT(*) as count FROM books");
+    if (bookCount.count === 0) {
+        await db.run(`
+            INSERT INTO books (title, author, year) VALUES 
+            ('The Hobbit', 'J.R.R. Tolkien', '1937'),
+            ('1984', 'George Orwell', '1949'),
+            ('To Kill a Mockingbird', 'Harper Lee', '1960'),
+            ('Pride and Prejudice', 'Jane Austen', '1813'),
+            ('The Great Gatsby', 'F. Scott Fitzgerald', '1925')
+        `);
     }
-};
 
-// Function to delete a book and manage available IDs
-const deleteBookIdHandler = (id) => {
-    const index = books.findIndex((book) => book.id === id);
-    if (index !== -1) {
-        books.splice(index, 1);
-        availableIds.push(id);
-    }
-};
+    return db;
+}
+
+let db;
 
 // VALIDATOR
 const validationHandler = (book) => {
@@ -85,7 +81,9 @@ const basePathHandler = (res) => {
     );
 };
 // All books
-const getBooksHandler = (res) => {
+const getBooksHandler = async (res) => {
+    let books = await db.all("SELECT * FROM books");
+
     if (books.length > 0) {
         res.setHeader("Content-Type", "application/JSON");
         res.statusCode = 200;
@@ -101,9 +99,9 @@ const getBooksHandler = (res) => {
     }
 };
 // Get book by Id
-const getBookById = (res, id) => {
+const getBookById = async (res, id) => {
     // check existance of book in library
-    let book = books.find((book) => book.id === id);
+    let book = await db.get("SELECT * FROM books WHERE id = ?", [id]);
 
     res.setHeader("Content-Type", "application/JSON");
     if (book) {
@@ -131,7 +129,6 @@ const notFoundHandler = (res) => {
 // POST _____
 // Add book
 const addBookHandler = (req, res) => {
-    let timestamp = new Date().toISOString();
     // create empty variable
     let requestData = "";
 
@@ -140,14 +137,16 @@ const addBookHandler = (req, res) => {
         requestData += chunk.toString();
     });
 
-    req.on("end", () => {
+    req.on("end", async () => {
         try {
             const book = JSON.parse(requestData);
-
             validationHandler(book);
 
-            book.id = generateId();
-            books.push(book); // Store book in memory
+            // Insert book in DB
+            const result = await db.run(
+                "INSERT INTO books (title, author, year) VALUES (?, ?, ?)",
+                [book.title, book.author, book.year]
+            );
 
             res.setHeader("Content-type", "application/json");
             res.statusCode = 201; // Created
@@ -155,7 +154,6 @@ const addBookHandler = (req, res) => {
                 JSON.stringify({
                     msg: "Book added to library",
                     book: book,
-                    time: timestamp,
                 })
             );
         } catch (error) {
@@ -163,7 +161,6 @@ const addBookHandler = (req, res) => {
             res.end(
                 JSON.stringify({
                     error: error.message || "Invalid JSON data",
-                    time: timestamp,
                 })
             );
         }
@@ -179,23 +176,40 @@ const updateBookHandler = (req, res, id) => {
         requestData += chunk.toString();
     });
 
-    req.on("end", () => {
+    req.on("end", async () => {
         try {
             const bookData = JSON.parse(requestData);
-            const bookIndex = books.findIndex((book) => book.id === id);
 
-            if (bookIndex === -1) {
+            // Get current Book
+            const currentBook = await db.get(
+                "SELECT * FROM books WHERE id= ?",
+                [id]
+            );
+
+            if (!currentBook) {
                 res.statusCode = 404;
                 res.end(JSON.stringify({ error: "Book not found" }));
                 return;
             }
 
-            // Update book while preserving its ID
-            const updatedBook = { ...bookData, id: books[bookIndex].id };
+            validationHandler(bookData);
 
-            validationHandler(updatedBook);
+            // Update the book
+            await db.run(
+                "UPDATE books SET title = :title, author = :author, year = :year WHERE id = :id",
+                {
+                    ":title": bookData.title,
+                    ":author": bookData.author,
+                    ":year": bookData.year,
+                    ":id": id,
+                }
+            );
 
-            books[bookIndex] = updatedBook;
+            // Get updated book
+            const updatedBook = await db.get(
+                "SELECT * FROM books WHERE id = ?",
+                [id]
+            );
 
             res.statusCode = 200;
             res.end(
@@ -206,21 +220,23 @@ const updateBookHandler = (req, res, id) => {
             );
         } catch (error) {
             res.statusCode = 400;
-            res.end(JSON.stringify({ error: "Invalid JSON data" }));
+            res.end(
+                JSON.stringify({ error: error.message || "Invalid JSON data" })
+            );
         }
     });
 };
 
 // DELETE ____
-const deleteBookHandler = (res, id) => {
-    const bookExists = books.some((book) => book.id === id);
+const deleteBookHandler = async (res, id) => {
+    const bookExists = await db.get("SELECT * from books WHERE id = ?", [id]);
 
     if (!bookExists) {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: "Book not found" }));
         return;
     } else {
-        deleteBookIdHandler(id);
+        await db.run("DELETE from books WHERE id = ?", [id]);
         res.statusCode = 200;
         res.end(
             JSON.stringify({
@@ -267,4 +283,18 @@ const server = http.createServer((req, res) => {
     }
 });
 
-server.listen(3000);
+async function startServer() {
+    try {
+        // Initialize and store the database connection
+        db = await initializeDatabase();
+
+        // Only start the server after database is ready
+        server.listen(3000, () => {
+            console.log("Server running on port 3000");
+        });
+    } catch (error) {
+        console.error("Failed to initialize database:", error);
+    }
+}
+
+startServer();
