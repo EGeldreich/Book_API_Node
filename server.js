@@ -2,6 +2,8 @@ import { time } from "console";
 import http from "http";
 import { open } from "sqlite";
 import sqlite3 from "sqlite3";
+import querystring from "querystring";
+import url from "url";
 
 // Database initialization function
 async function initializeDatabase() {
@@ -110,6 +112,40 @@ const getBookById = async (res, id) => {
     } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: "Book not found" }));
+    }
+};
+// Search
+// Dynamic SQL query
+const searchHandler = async (res, queryParams) => {
+    let conditions = [];
+    let params = {};
+
+    if (queryParams.title) {
+        conditions.push("title LIKE :titleParam");
+        params[":titleParam"] = `%${queryParams.title}%`;
+    }
+    if (queryParams.author) {
+        conditions.push("author LIKE :authorParam");
+        params[":authorParam"] = `%${queryParams.author}%`;
+    }
+    if (queryParams.year) {
+        conditions.push("year LIKE :yearParam");
+        params[":yearParam"] = `%${queryParams.year}%`;
+    }
+
+    let whereClause =
+        conditions.length > 0 ? `WHERE ${conditions.join(" OR ")}` : "";
+    let query = `SELECT * FROM books ${whereClause}`;
+
+    try {
+        let result = await db.all(query, params);
+        res.setHeader("Content-Type", "application/JSON");
+        res.statusCode = 200;
+        res.end(JSON.stringify(result));
+    } catch (error) {
+        console.error("Error executing query:", error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
     }
 };
 // Not Found
@@ -250,36 +286,53 @@ const deleteBookHandler = async (res, id) => {
 // _______________________________________________________________________________________________
 // _______________________________________________________________________________________________
 
-const server = http.createServer((req, res) => {
-    if (req.url === "/books" && req.method === "POST") {
-        addBookHandler(req, res);
-    } else if (req.url === "/" && req.method === "GET") {
-        basePathHandler(res);
-    } else if (req.url === "/books" && req.method === "GET") {
-        getBooksHandler(res);
-    } else if (req.url.startsWith("/books/") && req.method === "GET") {
-        const id = parseInt(req.url.split("/")[2]);
-        if (id) {
-            getBookById(res, id);
+const server = http.createServer(async (req, res) => {
+    try {
+        if (req.url === "/books" && req.method === "POST") {
+            addBookHandler(req, res);
+        } else if (req.url === "/" && req.method === "GET") {
+            basePathHandler(res);
+        } else if (req.url === "/books" && req.method === "GET") {
+            getBooksHandler(res);
+        } else if (
+            req.url.startsWith("/books/search") &&
+            req.method === "GET"
+        ) {
+            const parsedUrl = url.parse(req.url);
+            const queryParams = querystring.parse(parsedUrl.query);
+            if (Object.keys(queryParams).length > 0) {
+                await searchHandler(res, queryParams);
+            } else {
+                getBooksHandler(res);
+            }
+        } else if (req.url.startsWith("/books/") && req.method === "GET") {
+            const id = parseInt(req.url.split("/")[2]);
+            if (id) {
+                getBookById(res, id);
+            } else {
+                basicErrorHandler(res);
+            }
+        } else if (req.url.startsWith("/books/") && req.method === "PUT") {
+            const id = parseInt(req.url.split("/")[2]);
+            if (id) {
+                updateBookHandler(req, res, id);
+            } else {
+                basicErrorHandler(res);
+            }
+        } else if (req.url.startsWith("/books/") && req.method === "DELETE") {
+            const id = parseInt(req.url.split("/")[2]);
+            if (id) {
+                deleteBookHandler(res, id);
+            } else {
+                basicErrorHandler(res);
+            }
         } else {
-            basicErrorHandler(res);
+            notFoundHandler(res);
         }
-    } else if (req.url.startsWith("/books/") && req.method === "PUT") {
-        const id = parseInt(req.url.split("/")[2]);
-        if (id) {
-            updateBookHandler(req, res, id);
-        } else {
-            basicErrorHandler(res);
-        }
-    } else if (req.url.startsWith("/books/") && req.method === "DELETE") {
-        const id = parseInt(req.url.split("/")[2]);
-        if (id) {
-            deleteBookHandler(res, id);
-        } else {
-            basicErrorHandler(res);
-        }
-    } else {
-        notFoundHandler(res);
+    } catch (error) {
+        console.error("Error handling request:", error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
     }
 });
 
