@@ -42,8 +42,8 @@ A self-made exercise to learn Node.js by building a book library API from scratc
 ### Setup
 1. Clone this project:
 ```bash
-git clone [your-repo-url]
-cd [your-repo-name]
+git clone https://github.com/EGeldreich/Book_API_Node
+cd Book_API_Node
 ```
 
 2. Install what's needed:
